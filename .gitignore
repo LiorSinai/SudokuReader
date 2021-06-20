@@ -1,0 +1,16 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Jupyter notebook checkpoints
+*.ipynb_*
+
+# VSCode
+.vscode/
+
+# datasets (large files)
+datasets/
+
+# models
+number_detector/models/
