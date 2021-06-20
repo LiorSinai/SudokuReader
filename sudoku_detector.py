@@ -11,8 +11,9 @@ import tensorflow as tf
 import matplotlib.pyplot as plt
 import os
 
-from grid_detector.grid_detector import detectRectangle, projectGrid
-from grid_detector.transforms import warpPoints, fourPointTransform, resize
+from grid_detector.grid_detector import detectRectangle
+from grid_detector.transforms import fourPointTransform, resize, projectText, projectGrid
+from grid_detector.utilities import padRectangle
 from number_detector.train_recogniser import load_CNN_model
 
 
@@ -26,13 +27,9 @@ def predictNumber(image, model):
 
 
 def extractDigit(image, min_area_ratio=0.01, min_centre_overlap_ratio=0.1, radius_ratio=0.25, pad_ratio=0.2, debug=False):
-    ret, thres = cv.threshold(image, 0, 255, cv.THRESH_BINARY_INV | cv.THRESH_OTSU)
-    ret, labels, stats, centroids = cv.connectedComponentsWithStats(thres, 8)
-    height, width = thres.shape[0], thres.shape[1]
-
-    if debug:
-        thresBig = cv.resize(thres, (width * 5, height * 5))
-        cv.imshow("thresholded big", thresBig)    
+    ret, im_thres = cv.threshold(image, 0, 255, cv.THRESH_BINARY_INV | cv.THRESH_OTSU)
+    ret, labels, stats, centroids = cv.connectedComponentsWithStats(im_thres, 8)
+    height, width = im_thres.shape[0], im_thres.shape[1]  
 
     RoI = None
     centre = None
@@ -41,7 +38,7 @@ def extractDigit(image, min_area_ratio=0.01, min_centre_overlap_ratio=0.1, radiu
             continue        
         img_label = np.zeros(image.shape)
         img_label[labels == idx] = 255
-        overlap = calc_centre_overlap(img_label, radius_ratio=radius_ratio)
+        overlap = calcCentreOverlap(img_label, radius_ratio=radius_ratio)
         if debug:
             print("area: {:.2f}%".format(stats[idx, cv.CC_STAT_AREA]/(width * height) * 100))
             print("centroid at: ({:.2f}, {:.2f})".format(centroids[idx][0]/width, centroids[idx][1]/height))
@@ -56,21 +53,20 @@ def extractDigit(image, min_area_ratio=0.01, min_centre_overlap_ratio=0.1, radiu
             centre = (top_left[0] + width_label//2, top_left[1] + height_label//2)
             #centre = (int(centroids[idx][0]), int(centroids[idx][1]))
             length = max(width_label, height_label)
-            left = max(0, centre[0] - length//2 - pad)
-            right = min(width, centre[0] + length//2 + pad)
-            top = max(0, centre[1] - length//2 - pad)
-            bottom = min(height, centre[1] + length//2 + pad)
+            top, bottom, left, right = padRectangle(
+                (height, width), 
+                centre[1] - length//2, centre[1] + length//2,
+                centre[0] - length//2, centre[0] + length//2, 
+                pad)
             # remove all other objects and enhance constrast
-            thres[labels != idx] = 0 
-            thres[labels == idx] = 255  
-            RoI = thres[top:bottom, left:right]
-            if debug:
-                cv.imshow("Region of Interest", RoI)  
-                break
+            im_thres[labels != idx] = 0 
+            im_thres[labels == idx] = 255  
+            RoI = im_thres[top:bottom, left:right]
+            break
     return RoI, centre
 
 
-def calc_centre_overlap(image, radius_ratio=0.25):
+def calcCentreOverlap(image, radius_ratio=0.25):
     """
     Calculate the amount in middle based on overlap with a circle
     """
@@ -82,26 +78,27 @@ def calc_centre_overlap(image, radius_ratio=0.25):
     return overlap
 
 
-def project_text(image, text, centre_warped, M, fontScale=1, fontThickness=2):
-    centre = warpPoints([centre_warped], M)
-    textSize = cv.getTextSize(text=str(text), 
-        fontFace=cv.FONT_HERSHEY_SIMPLEX, 
-        fontScale=fontScale, 
-        thickness=fontThickness)
-    pos = (centre[0][0] - textSize[0][0]//2, centre[0][1] + textSize[0][1]//2)
-    cv.putText(image, text, pos, cv.FONT_HERSHEY_SIMPLEX, fontScale, grid_color, 
-        thickness=fontThickness)
+def collateImages(images, cell_shape, grid_shape):
+    for i, im in enumerate(images):
+        if im.shape != cell_shape:
+            images[i] = cv.resize(im, cell_shape)
+    im_rows = []
+    n_col = grid_shape[1]
+    for i in range(grid_shape[0]):
+        row = np.concatenate(images[(i * n_col): ((i + 1) * n_col)], axis=1)
+        im_rows.append(row)
+    out = np.concatenate(im_rows, axis=0)
+    return out
 
 
-def sudoku_detector(image_in, model, confidence_thres=0.9, grid_color=(0, 255, 255), debug=True):
+def sudokuDetector(image_in, model, confidence_thres=0.9, grid_color=(0, 255, 255), pad_ratio=0.2, debug=True):
     image = image_in.copy()
-    image = resize(image, max_dim=720)
     GRID_SIZE = 9
-    ### 
+    ## variables to return
     grid = np.zeros((GRID_SIZE, GRID_SIZE), np.int32)
     confidences = np.full((GRID_SIZE, GRID_SIZE), np.nan)
     # extract grid outline
-    parallelogram = detectRectangle(image, debug=debug)
+    parallelogram = detectRectangle(image, debug=False)
     gray = cv.cvtColor(image, cv.COLOR_BGR2GRAY)
     warped, M = fourPointTransform(gray, parallelogram)
     if np.linalg.det(M) == 0: # singular matrix
@@ -117,49 +114,61 @@ def sudoku_detector(image_in, model, confidence_thres=0.9, grid_color=(0, 255, 2
     # predict numbers and dispaly
     step_size_w = width / GRID_SIZE
     step_size_h = height / GRID_SIZE
-    pad = 0.2 * min(width, height) / GRID_SIZE
+    pad = pad_ratio * min(width, height) / GRID_SIZE
+    img_extracted = []
     for i in range(GRID_SIZE):
         for j in range(GRID_SIZE):
-            top = max(0, int(step_size_h * i - pad))
-            bottom = min(height, int(step_size_h * (i + 1) + pad))
-            left = max(0, int(step_size_w * j - pad))
-            right = min(width, int(step_size_w * (j + 1) + pad))
+            top, bottom, left, right = padRectangle(
+                (height, width), 
+                step_size_h * i, step_size_h * (i + 1), 
+                step_size_w * j, step_size_w * (j + 1),
+                pad)
             search_area = warped[top:bottom, left:right]
-            search_area, centre = extractDigit(search_area, debug=debug)
+            search_area, centre = extractDigit(search_area, debug=False)
+            if debug:
+                if search_area is not None:
+                    img_extracted.append(search_area)
+                else:
+                    img_extracted.append(np.zeros((28, 28)))
             if search_area is not None:
                 predicted_num, confidence = predictNumber(search_area, model)
                 print("({:d}, {:d}) predicted {:d} with confidence {:.2f}%".format(i, j, predicted_num, confidence*100))
                 if confidence < confidence_thres:
                     continue
                 centre = (left + centre[0], top + centre[1])
-                project_text(image, str(predicted_num), centre, Minv)   
+                projectText(image, str(predicted_num), centre, Minv, color=grid_color)   
                 grid[i][j] = predicted_num
                 confidences[i][j] = confidence
-            if debug:
-                cv.waitKey(0)
+
+    if debug:
+        img_extracted = collateImages(img_extracted, (28, 28), (9, 9))
+        cv.imshow("extracted digits", img_extracted)
+        cv.waitKey(0)
     return image, grid, confidences
 
 
 if __name__ == '__main__':
-    img_path = "images/Inkala_hardest.png"
+    img_path = "images/sudoku_thinkfun.jpg"
     image_orig  = cv.imread(img_path)
     if image_orig is None:
         print("file not found at ", img_path)
         exit()
-    shape = image_orig.shape
     image = image_orig.copy()
-    image = resize(image, max_dim=840)
+    image = resize(image, max_dim=840)  # GaussianBlur and adaptiveThreshold are scale dependent
     cv.imshow("Image", image)
     cv.waitKey(0)
     confidence_thres = 0.85
     grid_color = (0, 255, 255)
 
-
     print("loading model ...")
     model = load_CNN_model('number_detector/models/CNN_4_74k/')
     print("model loaded!")
     
-    image, grid, confidences = sudoku_detector(image, model, confidence_thres=confidence_thres, debug=False)
+    image, grid, confidences = sudokuDetector(
+        image, model, 
+        confidence_thres=confidence_thres, 
+        grid_color=grid_color, 
+        debug=False)
     cv.imshow("image with numbers", image)
 
     name, ext = os.path.splitext(img_path)
@@ -173,7 +182,7 @@ if __name__ == '__main__':
     #     raise IOError("Cannot open webcam")
     # while True:
     #     ret, frame = capture.read()
-    #     img_sudoku, grid, confidences = sudoku_detector(frame, model, confidence_thres=confidence_thres, debug=False)
+    #     img_sudoku, grid, confidences = sudokuDetector(frame, model, confidence_thres=confidence_thres, debug=False)
     #     cv.imshow('input', frame)
     #     if np.sum(grid) > 0:
     #         cv.imshow('detected', img_sudoku)

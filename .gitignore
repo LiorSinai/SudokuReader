@@ -14,3 +14,5 @@ datasets/
 
 # models
 number_detector/models/
+
+images/*_detected.*

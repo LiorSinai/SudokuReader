@@ -96,6 +96,31 @@ def warpPoints(points, M):
 	return np.array(out, np.int32)
 
 
+def projectGrid(image, width, height, M, thickness=1, gridsize=3, color=(0, 255, 255)):    
+    lines = [((0, 0), (width, 0)), ((0, 0), (0, height))]
+    for i in range(gridsize + 1):
+        h = i * height/gridsize
+        lines.append(((0, h), (width, h)))
+        w = i * width / gridsize
+        lines.append(((w, 0), (w, height)))
+    
+    for line in lines:
+        warped_line = warpPoints(line, M)
+        cv.polylines(image, [warped_line], False, color, thickness=thickness)
+
+
+def projectText(image, text, centre, M, fontScale=1, fontThickness=2, color=(0, 255, 255)):
+    centre_warped = warpPoints([centre], M)
+    textSize = cv.getTextSize(
+		text=text, 
+        fontFace=cv.FONT_HERSHEY_SIMPLEX, 
+        fontScale=fontScale, 
+        thickness=fontThickness)
+    pos = (centre_warped[0][0] - textSize[0][0]//2, centre_warped[0][1] + textSize[0][1]//2)
+    cv.putText(image, text, pos, cv.FONT_HERSHEY_SIMPLEX, fontScale, color, 
+        thickness=fontThickness)
+
+
 def resize(image, max_dim=1080):
 	height, width = image.shape[0], image.shape[1]
 	if height > max_dim:

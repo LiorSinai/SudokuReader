@@ -1,6 +1,19 @@
 import numpy as np
 import cv2 as cv
 
+def normL2(point1, point2):
+    return np.sqrt((point1[0] - point2[0]) ** 2 + (point1[1] - point2[1]) ** 2)
+
+
+def get_counts(arr):
+    counts = {}
+    for x in arr:
+        if x in counts:
+            counts[x] += 1
+        else:
+            counts[x] = 1
+    return counts
+
 
 def apply_mask(image, contour, thickness=1, debug=False):
     mask = np.zeros((image.shape[0:2]), np.uint8)
@@ -13,12 +26,3 @@ def apply_mask(image, contour, thickness=1, debug=False):
     out = np.zeros_like(image)
     out[mask == 255] = image[mask == 255]
     return out
-
-
-def padRectangle(max_shape, top, bottom,  left, right, pad):
-    height, width = max_shape[0], max_shape[1]
-    top = max(0, int(top - pad))
-    bottom = min(height, int(bottom + pad))
-    left = max(0, int(left - pad))
-    right = min(width, int(right + pad))
-    return top, bottom, left, right
